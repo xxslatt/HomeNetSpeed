@@ -1,0 +1,70 @@
+#!/bin/bash
+# optimize.sh — 家庭网络加速器部署脚本示例
+
+# 1. 更新软件源并安装依赖包
+if command -v apt >/dev/null; then
+    sudo apt update
+    sudo apt install -y nginx dnsmasq nscd
+elif command -v yum >/dev/null; then
+    sudo yum install -y epel-release
+    sudo yum install -y nginx dnsmasq nscd
+fi
+
+# 2. 启用并配置 DNS 缓存服务
+sudo systemctl enable dnsmasq nscd
+sudo systemctl restart dnsmasq nscd
+echo "listen-address=127.0.0.1" | sudo tee /etc/dnsmasq.d/homecache.conf
+echo "cache-size=1000"      | sudo tee -a /etc/dnsmasq.d/homecache.conf
+echo "server=8.8.8.8"       | sudo tee -a /etc/dnsmasq.d/homecache.conf
+echo "server=8.8.4.4"       | sudo tee -a /etc/dnsmasq.d/homecache.conf
+# 这样 dnsmasq 将监听本地并缓存 DNS 查询，加速常访问域名解析:contentReference[oaicite:27]{index=27}:contentReference[oaicite:28]{index=28}
+
+# 3. 配置 TCP BBR 及网络参数（写入 /etc/sysctl.conf）
+cat <<EOF | sudo tee /etc/sysctl.d/99-homenet.conf
+# 启用公平队列算法和 BBR 拥塞控制
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# 调整 TCP 缓冲区（优化高吞吐量环境）
+net.ipv4.tcp_rmem = 4096 262144 21367520
+net.ipv4.tcp_wmem = 4096 24576  21367520
+net.core.rmem_max = 21367520
+net.core.wmem_max = 21367520
+EOF
+sudo sysctl --system
+# 上述配置将 TCP 缓冲区最大值提高到约20MB:contentReference[oaicite:29]{index=29}:contentReference[oaicite:30]{index=30}并启用 BBR:contentReference[oaicite:31]{index=31}
+
+# 4. 配置 Nginx 反向代理与缓存（示例 http 配置文件）
+sudo tee /etc/nginx/nginx.conf >/dev/null <<'NGINX'
+user www-data;
+worker_processes auto;
+events { worker_connections 1024; }
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    gzip on;
+    gzip_min_length 1000;
+    gzip_types text/plain text/css application/json application/javascript text/xml;
+
+    # 定义缓存区
+    proxy_cache_path /var/cache/nginx/cacheZone levels=1:2 keys_zone=cacheZone:50m max_size=2g inactive=3d;
+    proxy_cache_key $scheme$host$request_uri;
+
+    server {
+        listen 80;
+        server_name example.com;
+        location / {
+            proxy_pass http://127.0.0.1:8080;
+            proxy_cache cacheZone;
+            proxy_cache_valid 200 302 3600s;
+            proxy_cache_valid 404 60s;
+            add_header X-Cache-Status $upstream_cache_status;
+        }
+    }
+}
+NGINX
+sudo systemctl restart nginx
+# Nginx 配置中启用了静态缓存和 Gzip 压缩，可加速静态资源加载:contentReference[oaicite:32]{index=32}:contentReference[oaicite:33]{index=33}
+
